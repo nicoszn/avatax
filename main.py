@@ -141,7 +141,7 @@ async def lifespan(app: FastAPI):
 # ── FastAPI App ──────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="MediaForge",
+    title="Avatax",
     description=(
         "Advanced multi-platform media extractor API. "
         "Extract video, audio, images, and metadata from 30+ platforms "
