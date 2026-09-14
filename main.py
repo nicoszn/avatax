@@ -1,5 +1,5 @@
 """
-MediaForge — Advanced Media Extractor API
+Avatax — Advanced Media Extractor API
 Built on yt-dlp 2026.08.19+ and FastAPI.
 """
 
