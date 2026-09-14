@@ -9,7 +9,7 @@ import type {
   MediaType,
 } from "./types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "avatax-production-608e.up.railway.app"
+const API_BASE = "https://avatax-production-608e.up.railway.app"
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
