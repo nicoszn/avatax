@@ -47,6 +47,12 @@ class ExtractRequest(BaseModel):
         default=CompressionPreset.BALANCED,
         description="FFmpeg compression preset used when compress=true",
     )
+    max_height: int | None = Field(
+        default=None,
+        ge=144,
+        le=4320,
+        description="Cap output resolution when compressing (e.g. 720, 1080)",
+    )
 
 
 class DownloadRequest(BaseModel):
@@ -58,6 +64,12 @@ class DownloadRequest(BaseModel):
     compression_preset: CompressionPreset = Field(
         default=CompressionPreset.BALANCED,
         description="FFmpeg compression preset used when compress=true",
+    )
+    max_height: int | None = Field(
+        default=None,
+        ge=144,
+        le=4320,
+        description="Cap output resolution when compressing (e.g. 720, 1080)",
     )
 
 
