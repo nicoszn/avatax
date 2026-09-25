@@ -44,6 +44,7 @@ from extractor import (
 
 import json
 import asyncio
+import subprocess
 
 DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "mediaforge_downloads"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -391,11 +392,6 @@ def _download_with_ytdlp(
 
 MAX_COMPRESSION_SECONDS = 10 * 60  # hard cap on FFmpeg compression time
 MIN_COMPRESS_FILE_SIZE = 1_000_000  # don't bother re-encoding files under ~1 MB
-MAX_ENCODE_CONCURRENCY = 2  # max simultaneous FFmpeg processes (CPU/RAM guard)
-
-# Module-level semaphore: bounds concurrent encodes across all requests.
-# (Bound lazily to the running event loop on first acquire — uvicorn runs one loop.)
-ENCODE_SEMAPHORE = asyncio.Semaphore(MAX_ENCODE_CONCURRENCY)
 
 COMPRESSION_CRF: dict[str, str] = {
     "light": "28",
@@ -407,44 +403,8 @@ COMPRESSION_CRF: dict[str, str] = {
 COMPRESSIBLE_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".flv", ".ts"}
 
 
-def _maxrate_for_height(max_height: int) -> int:
-    """Bitrate cap in bits/s for a 16:9 frame at ``max_height``.
-
-    ~5.4 bits/pixel ≈ typical streaming ladders (720p → ~5 Mbps,
-    480p → ~2.2 Mbps, 1080p → ~11 Mbps).
-    """
-    return int(max_height * max_height * (16 / 9) * 5.4)
-
-
-async def _kill_process(proc: asyncio.subprocess.Process) -> None:
-    """Terminate a child process, escalating to SIGKILL — never leaves orphans."""
-    if proc.returncode is not None:
-        return
-    try:
-        proc.terminate()
-    except ProcessLookupError:
-        return
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=5)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            return
-        await proc.wait()
-
-
-async def _compress_with_ffmpeg(
-    file_path: Path,
-    preset: str = "balanced",
-    max_height: int | None = None,
-) -> Path:
+def _compress_with_ffmpeg(file_path: Path, preset: str = "balanced") -> Path:
     """Re-encode a downloaded media file with FFmpeg to reduce its size.
-
-    Fully asynchronous (``asyncio.create_subprocess_exec``): the event loop
-    stays responsive, concurrent encodes are bounded by ``ENCODE_SEMAPHORE``,
-    the 10-minute cap terminates the child cleanly, and cancellation (e.g.
-    client disconnect) kills the child so no FFmpeg process is ever orphaned.
 
     Produces ``<stem>-compressed.mp4`` next to the original, registers it
     with the existing file tracker (so the background cleanup loop removes
@@ -474,49 +434,28 @@ async def _compress_with_ffmpeg(
         "-c:v", "libx264", "-preset", "slow", "-crf", crf,
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
+        str(out_path),
     ]
 
-    # Optional downscale: cap height (and derive a matching bitrate cap).
-    if max_height:
-        cmd += [
-            "-vf", rf"scale=-2:min(ih\,{max_height})",
-            "-maxrate", str(_maxrate_for_height(max_height)),
-            "-bufsize", str(2 * _maxrate_for_height(max_height)),
-        ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=MAX_COMPRESSION_SECONDS,
+        )
+    except FileNotFoundError as e:
+        out_path.unlink(missing_ok=True)
+        raise RuntimeError("ffmpeg is not installed or not on PATH") from e
+    except subprocess.TimeoutExpired as e:
+        out_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"ffmpeg compression exceeded {MAX_COMPRESSION_SECONDS}s cap"
+        ) from e
 
-    cmd.append(str(out_path))
-
-    # Semaphore bounds the number of live FFmpeg processes across requests.
-    async with ENCODE_SEMAPHORE:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError as e:
-            raise RuntimeError("ffmpeg is not installed or not on PATH") from e
-
-        try:
-            _, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=MAX_COMPRESSION_SECONDS
-            )
-        except asyncio.TimeoutError as e:
-            await _kill_process(proc)
-            out_path.unlink(missing_ok=True)
-            raise RuntimeError(
-                f"ffmpeg compression exceeded {MAX_COMPRESSION_SECONDS}s cap"
-            ) from e
-        except asyncio.CancelledError:
-            # Request cancelled/client gone — kill the child, no orphans.
-            await _kill_process(proc)
-            out_path.unlink(missing_ok=True)
-            raise
-
-    stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")
     if proc.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
         out_path.unlink(missing_ok=True)
-        detail = stderr.strip().splitlines()[-1] if stderr.strip() else "unknown error"
+        detail = (proc.stderr or "").strip().splitlines()[-1] if proc.stderr else "unknown error"
         raise RuntimeError(f"ffmpeg failed (exit {proc.returncode}): {detail}")
 
     # Only worth serving the re-encode if it actually shrank the file.
@@ -538,12 +477,6 @@ async def download_media_ytdlp(
     compression_preset: str = Query(
         default="balanced",
         description="Compression preset: light, balanced, aggressive",
-    ),
-    max_height: int | None = Query(
-        default=None,
-        ge=144,
-        le=4320,
-        description="Cap output resolution when compressing (144-4320, e.g. 720)",
     ),
 ):
     """
@@ -569,13 +502,13 @@ async def download_media_ytdlp(
         raise HTTPException(status_code=500, detail="yt-dlp could not download the file")
 
     # Optionally re-encode with FFmpeg before serving; fall back to the
-    # original file if compression fails for any reason. Fully async — the
-    # event loop stays responsive and the semaphore caps concurrency.
+    # original file if compression fails for any reason. Run in a worker
+    # thread so a long encode can't block the event loop.
     served_path = file_path
     if compress:
         try:
-            served_path = await _compress_with_ffmpeg(
-                file_path, compression_preset, max_height
+            served_path = await asyncio.to_thread(
+                _compress_with_ffmpeg, file_path, compression_preset
             )
         except Exception as e:
             print(f"[compression] failed for {file_path.name}: {e}", flush=True)
@@ -924,7 +857,7 @@ async def info():
             "extract": "POST /extract — Full media extraction with formats",
             "extract_quick": "GET /extract/url?url=... — Quick extraction via GET",
             "batch": "POST /extract/batch — Extract from multiple URLs",
-            "dl": "GET /dl?url=...&quality=...&compress=true[&compression_preset=light|balanced|aggressive][&max_height=720] — Download via yt-dlp + serve file (optionally FFmpeg-compressed, resolution-capped)",
+            "dl": "GET /dl?url=...&quality=...&compress=true[&compression_preset=light|balanced|aggressive] — Download via yt-dlp + serve file (optionally FFmpeg-compressed)",
             "dl_test": "GET /dl/test?url=... — Debug: test extraction",
             "formats": "GET /formats?url=... — List all available formats",
             "audio": "GET /audio?url=... — Extract audio-only streams",
