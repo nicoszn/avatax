@@ -102,34 +102,6 @@ body {
 .compress-toggle.on .switch { background: var(--accent); }
 .compress-toggle.on .switch::after { transform: translateX(12px); }
 
-/* Download job panel — progress (#11) + variant choice (#13) */
-.job-panel {
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px;
-  animation: fadeUp 0.3s ease-out;
-}
-.job-stage {
-  display: flex; justify-content: space-between; align-items: center;
-  font-size: 0.85rem; font-weight: 600; margin-bottom: 8px;
-}
-.job-pct { color: var(--accent); font-variant-numeric: tabular-nums; }
-.progress-track {
-  height: 8px; background: var(--bg-input);
-  border-radius: 100px; overflow: hidden;
-}
-.progress-fill {
-  height: 100%; background: var(--accent);
-  border-radius: 100px; transition: width 0.3s ease;
-}
-.job-ready { display: flex; gap: 8px; flex-wrap: wrap; }
-.job-size { font-weight: 500; opacity: 0.85; }
-.job-note { font-size: 0.75rem; color: var(--text-muted); margin-top: 8px; }
-.job-error { font-size: 0.85rem; color: var(--danger); font-weight: 600; }
-
-/* Converted anchors → buttons keep their original look */
-button.download-url, button.format-dl { font-family: inherit; border: none; cursor: pointer; }
-.download-url { background-clip: padding-box; }
-
 /* Status */
 .status-bar { padding: 10px 14px; border-radius: var(--radius-sm); font-size: 0.82rem; font-weight: 500; margin-bottom: 16px; }
 .status-bar.loading { background: #eef2ff; color: var(--accent); border: 1px solid #c7d2fe; }

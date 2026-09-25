@@ -10,8 +10,6 @@ document.addEventListener('alpine:init', () => {
     mediaType: 'all',
     compress: false,
     compressionPreset: 'balanced',
-    job: null,
-    _jobTimer: null,
     loading: false,
     downloading: false,
     error: null,
@@ -150,7 +148,6 @@ document.addEventListener('alpine:init', () => {
 
     // ── Action dispatcher ────────────────────────────────────────────
     async submit() {
-      this.clearJob();
       if (this.activeTab === 'batch') {
         await this.extractBatch();
       } else if (this.activeTab === 'playlist') {
@@ -158,105 +155,6 @@ document.addEventListener('alpine:init', () => {
       } else {
         await this.extract();
       }
-    },
-
-    // ── Download job flow (#8 queue, #11 progress, #13 variant choice) ──
-
-    /** Human-readable stage label for the current job. */
-    jobStage() {
-      if (!this.job) return '';
-      const s = this.job.status;
-      if (s === 'queued') return 'Queued…';
-      if (s === 'downloading') return 'Downloading…';
-      if (s === 'encoding') return `Encoding… ${Math.round(this.job.progress || 0)}%`;
-      if (s === 'ready') return 'Ready — choose your file';
-      if (s === 'error') return 'Failed';
-      return s;
-    },
-
-    /** Static size-saving estimate shown before a job runs (#12). */
-    compressionEstimate(preset) {
-      const map = {
-        light: '≈25–40% smaller',
-        balanced: '≈40–60% smaller',
-        aggressive: '≈50–75% smaller',
-      };
-      return map[preset] || map.balanced;
-    },
-
-    /**
-     * Entry point for every download control: plain downloads navigate
-     * straight to /dl (fast path); compressed downloads go through the
-     * async job flow so we can show progress and offer variant choice.
-     */
-    requestDownload(url, quality, formatId) {
-      if (!url) return;
-      this.error = null;
-      if (!this.compressionActive()) {
-        window.location.href = this.dlUrl(url, quality, formatId);
-      } else {
-        this.startJob(url, quality, formatId);
-      }
-    },
-
-    async startJob(url, quality, formatId) {
-      this.clearJob();
-      try {
-        const resp = await fetch(this.api('/dl/start'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            url,
-            quality: quality || this.quality,
-            format_id: formatId || null,
-            compress: true,
-            compression_preset: this.compressionPreset,
-          }),
-        });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.detail || 'Could not start download');
-        this.job = { job_id: data.job_id, status: data.status, progress: 0, served: null };
-        this._jobTimer = setInterval(() => this.pollJob(), 700);
-      } catch (e) {
-        this.error = e.message || 'Could not start download';
-      }
-    },
-
-    async pollJob() {
-      if (!this.job) return;
-      try {
-        const resp = await fetch(this.api(`/dl/status/${this.job.job_id}`));
-        if (!resp.ok) throw new Error('Download job expired');
-        const s = await resp.json();
-        const served = this.job.served;
-        this.job = { ...s, served };
-        if (s.status === 'ready' || s.status === 'error') {
-          clearInterval(this._jobTimer);
-          this._jobTimer = null;
-        }
-      } catch (e) {
-        if (this.job) {
-          this.job.status = 'error';
-          this.job.error = e.message || 'Download job failed';
-        }
-        clearInterval(this._jobTimer);
-        this._jobTimer = null;
-      }
-    },
-
-    clearJob() {
-      if (this._jobTimer) clearInterval(this._jobTimer);
-      this._jobTimer = null;
-      this.job = null;
-    },
-
-    jobFileUrl(variant) {
-      return this.job ? this.api(`/dl/file/${this.job.job_id}?variant=${variant}`) : '#';
-    },
-
-    /** Remember which variant the user picked (the server drops the other). */
-    chooseVariant(variant) {
-      if (this.job) this.job.served = variant;
     },
 
     // ── Download helpers ─────────────────────────────────────────────
