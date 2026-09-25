@@ -25,6 +25,13 @@ class QualityPreset(str, Enum):
     CUSTOM = "custom"
 
 
+class CompressionPreset(str, Enum):
+    """FFmpeg compression presets (lower CRF = better quality, bigger file)."""
+    LIGHT = "light"        # CRF 28 — smallest file, noticeable quality loss
+    BALANCED = "balanced"  # CRF 23 — default, good size/quality tradeoff
+    AGGRESSIVE = "aggressive"  # CRF 20 — larger file, best quality
+
+
 # ── Request Models ───────────────────────────────────────────────────────────
 
 class ExtractRequest(BaseModel):
@@ -35,6 +42,11 @@ class ExtractRequest(BaseModel):
     include_subtitles: bool = Field(default=False, description="Include subtitle info")
     include_comments: bool = Field(default=False, description="Include video comments")
     cookies: str | None = Field(default=None, description="Cookie string for authenticated extraction")
+    compress: bool = Field(default=False, description="Compress the downloaded file with FFmpeg")
+    compression_preset: CompressionPreset = Field(
+        default=CompressionPreset.BALANCED,
+        description="FFmpeg compression preset used when compress=true",
+    )
 
 
 class DownloadRequest(BaseModel):
@@ -42,6 +54,11 @@ class DownloadRequest(BaseModel):
     media_type: MediaType = Field(default=MediaType.ALL, description="Filter by media type")
     quality: QualityPreset = Field(default=QualityPreset.BEST, description="Quality preset")
     format_id: str | None = Field(default=None, description="Specific format ID")
+    compress: bool = Field(default=False, description="Compress the downloaded file with FFmpeg")
+    compression_preset: CompressionPreset = Field(
+        default=CompressionPreset.BALANCED,
+        description="FFmpeg compression preset used when compress=true",
+    )
 
 
 class PlaylistRequest(BaseModel):

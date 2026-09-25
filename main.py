@@ -44,6 +44,7 @@ from extractor import (
 
 import json
 import asyncio
+import subprocess
 
 DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "mediaforge_downloads"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -387,12 +388,96 @@ def _download_with_ytdlp(
     return None
 
 
+# ── FFmpeg Compression ───────────────────────────────────────────────────────────────
+
+MAX_COMPRESSION_SECONDS = 10 * 60  # hard cap on FFmpeg compression time
+MIN_COMPRESS_FILE_SIZE = 1_000_000  # don't bother re-encoding files under ~1 MB
+
+COMPRESSION_CRF: dict[str, str] = {
+    "light": "28",
+    "balanced": "23",
+    "aggressive": "20",
+}
+
+# Container types FFmpeg can re-encode into a smaller MP4.
+COMPRESSIBLE_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".flv", ".ts"}
+
+
+def _compress_with_ffmpeg(file_path: Path, preset: str = "balanced") -> Path:
+    """Re-encode a downloaded media file with FFmpeg to reduce its size.
+
+    Produces ``<stem>-compressed.mp4`` next to the original, registers it
+    with the existing file tracker (so the background cleanup loop removes
+    it after the TTL), and returns its path.
+
+    Raises RuntimeError if FFmpeg is unavailable, times out, or fails, so
+    callers can fall back to the original file.
+    """
+    if not file_path.exists():
+        raise RuntimeError(f"File not found: {file_path}")
+
+    # Images and audio-only containers are already small — nothing to do.
+    if file_path.suffix.lower() not in COMPRESSIBLE_EXTS:
+        return file_path
+
+    # Not worth the CPU for tiny files.
+    if file_path.stat().st_size < MIN_COMPRESS_FILE_SIZE:
+        return file_path
+
+    crf = COMPRESSION_CRF.get(preset, COMPRESSION_CRF["balanced"])
+    out_path = file_path.with_name(f"{file_path.stem}-compressed.mp4")
+    out_path.unlink(missing_ok=True)
+
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(file_path),
+        "-c:v", "libx264", "-preset", "slow", "-crf", crf,
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        str(out_path),
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=MAX_COMPRESSION_SECONDS,
+        )
+    except FileNotFoundError as e:
+        out_path.unlink(missing_ok=True)
+        raise RuntimeError("ffmpeg is not installed or not on PATH") from e
+    except subprocess.TimeoutExpired as e:
+        out_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"ffmpeg compression exceeded {MAX_COMPRESSION_SECONDS}s cap"
+        ) from e
+
+    if proc.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
+        out_path.unlink(missing_ok=True)
+        detail = (proc.stderr or "").strip().splitlines()[-1] if proc.stderr else "unknown error"
+        raise RuntimeError(f"ffmpeg failed (exit {proc.returncode}): {detail}")
+
+    # Only worth serving the re-encode if it actually shrank the file.
+    if out_path.stat().st_size >= file_path.stat().st_size:
+        out_path.unlink(missing_ok=True)
+        return file_path
+
+    _track_file(out_path)
+    return out_path
+
+
 @app.get("/dl", tags=["Download"])
 async def download_media_ytdlp(
     url: str = Query(..., description="Original media page URL to download from"),
     quality: str = Query("best", description="Quality: best, good, worst, audio_only"),
     format_id: str | None = Query(default=None, description="Specific yt-dlp format ID"),
     filename: str = Query(default="", description="Suggested filename"),
+    compress: bool = Query(default=False, description="Compress the downloaded file with FFmpeg before serving"),
+    compression_preset: str = Query(
+        default="balanced",
+        description="Compression preset: light, balanced, aggressive",
+    ),
 ):
     """
     Download media using yt-dlp and serve the file.
@@ -416,13 +501,26 @@ async def download_media_ytdlp(
     if file_path is None or not file_path.exists():
         raise HTTPException(status_code=500, detail="yt-dlp could not download the file")
 
-    file_size = file_path.stat().st_size
+    # Optionally re-encode with FFmpeg before serving; fall back to the
+    # original file if compression fails for any reason. Run in a worker
+    # thread so a long encode can't block the event loop.
+    served_path = file_path
+    if compress:
+        try:
+            served_path = await asyncio.to_thread(
+                _compress_with_ffmpeg, file_path, compression_preset
+            )
+        except Exception as e:
+            print(f"[compression] failed for {file_path.name}: {e}", flush=True)
+            served_path = file_path
+
+    file_size = served_path.stat().st_size
     if file_size == 0:
         file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail="Downloaded file is empty")
 
     # Determine content type from extension
-    ext = file_path.suffix.lower()
+    ext = served_path.suffix.lower()
     content_type_map = {
         ".mp4": "video/mp4",
         ".webm": "video/webm",
@@ -446,7 +544,7 @@ async def download_media_ytdlp(
     # Build filename for download
     if not filename:
         # Try to get title from info dict, fallback to file stem
-        filename = file_path.stem
+        filename = served_path.stem
         # Clean the filename
         filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
         if len(filename) < 3:
@@ -454,7 +552,7 @@ async def download_media_ytdlp(
     download_name = f"{filename}{ext}"
 
     return FileResponse(
-        path=str(file_path),
+        path=str(served_path),
         media_type=content_type,
         filename=download_name,
         headers={
@@ -759,7 +857,7 @@ async def info():
             "extract": "POST /extract — Full media extraction with formats",
             "extract_quick": "GET /extract/url?url=... — Quick extraction via GET",
             "batch": "POST /extract/batch — Extract from multiple URLs",
-            "dl": "GET /dl?url=...&quality=... — Download via yt-dlp + serve file",
+            "dl": "GET /dl?url=...&quality=...&compress=true[&compression_preset=light|balanced|aggressive] — Download via yt-dlp + serve file (optionally FFmpeg-compressed)",
             "dl_test": "GET /dl/test?url=... — Debug: test extraction",
             "formats": "GET /formats?url=... — List all available formats",
             "audio": "GET /audio?url=... — Extract audio-only streams",
