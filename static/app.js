@@ -8,6 +8,8 @@ document.addEventListener('alpine:init', () => {
     batchUrls: '',
     quality: 'best',
     mediaType: 'all',
+    compress: false,
+    compressionPreset: 'balanced',
     loading: false,
     downloading: false,
     error: null,
@@ -157,6 +159,11 @@ document.addEventListener('alpine:init', () => {
 
     // ── Download helpers ─────────────────────────────────────────────
 
+    /** Whether the next download will be FFmpeg-compressed. */
+    compressionActive() {
+      return this.compress && this.quality !== 'audio_only';
+    },
+
     /**
      * Build download URL that triggers yt-dlp download on the server.
      * The /dl endpoint takes the ORIGINAL source URL (not CDN URL)
@@ -167,6 +174,11 @@ document.addEventListener('alpine:init', () => {
       let href = this.api(`/dl?url=${encodeURIComponent(sourceUrl)}&quality=${encodeURIComponent(quality || 'best')}`);
       if (formatId) {
         href += `&format_id=${encodeURIComponent(formatId)}`;
+      }
+      // Append FFmpeg compression params when the toggle is on
+      // (audio-only output is skipped — the backend passes those through).
+      if (this.compressionActive()) {
+        href += `&compress=true&compression_preset=${encodeURIComponent(this.compressionPreset)}`;
       }
       return href;
     },

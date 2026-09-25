@@ -72,6 +72,20 @@
           <option value="image">Images</option>
         </select>
       </div>
+      <label class="compress-toggle"
+             :class="{ on: $store.forge.compressionActive(), disabled: $store.forge.quality === 'audio_only' }"
+             :title="$store.forge.quality === 'audio_only' ? 'Not available for audio-only downloads' : 'Re-encode downloads with FFmpeg to a smaller file'">
+        <input type="checkbox" x-model="$store.forge.compress" :disabled="$store.forge.quality === 'audio_only'" />
+        <span class="switch"></span>
+        <span>🗜 Compress</span>
+      </label>
+      <div class="select-wrap" x-show="$store.forge.compressionActive()" x-transition.opacity>
+        <select x-model="$store.forge.compressionPreset" aria-label="Compression preset">
+          <option value="light">🪶 Light</option>
+          <option value="balanced">⚖️ Balanced</option>
+          <option value="aggressive">🔬 Aggressive</option>
+        </select>
+      </div>
       <template x-if="$store.forge.detectedPlatform">
         <span class="platform-tag" x-text="$store.forge.platformEmoji($store.forge.detectedPlatform) + ' ' + $store.forge.detectedPlatform"></span>
       </template>
@@ -109,8 +123,13 @@
 
         <!-- Download -->
         <div class="download-section">
+          <template x-if="$store.forge.compressionActive()">
+            <span class="meta-tag">🗜 FFmpeg · <span x-text="$store.forge.compressionPreset"></span></span>
+          </template>
           <template x-if="$store.forge.result.media.webpage_url || $store.forge.result.media.original_url">
-            <a class="btn-download primary" :href="$store.forge.dlUrl($store.forge.result.media.webpage_url || $store.forge.result.media.original_url, $store.forge.quality)">⬇ Download</a>
+            <a class="btn-download primary" :href="$store.forge.dlUrl($store.forge.result.media.webpage_url || $store.forge.result.media.original_url, $store.forge.quality)">
+              <span x-text="$store.forge.compressionActive() ? '⬇ Download (🗜 compressed)' : '⬇ Download'"></span>
+            </a>
           </template>
           <template x-if="$store.forge.result.media.webpage_url">
             <a class="btn-download secondary" :href="$store.forge.result.media.webpage_url" target="_blank">🔗 Original</a>
