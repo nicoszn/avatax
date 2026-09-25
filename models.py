@@ -73,6 +73,47 @@ class DownloadRequest(BaseModel):
     )
 
 
+class StartDownloadRequest(BaseModel):
+    url: str = Field(..., description="Original media page URL to download")
+    quality: QualityPreset = Field(default=QualityPreset.BEST, description="Quality preset")
+    format_id: str | None = Field(default=None, description="Specific format ID")
+    filename: str = Field(default="", description="Suggested filename")
+    compress: bool = Field(default=False, description="Compress the downloaded file with FFmpeg")
+    compression_preset: CompressionPreset = Field(
+        default=CompressionPreset.BALANCED,
+        description="FFmpeg compression preset used when compress=true",
+    )
+    max_height: int | None = Field(
+        default=None,
+        ge=144,
+        le=4320,
+        description="Cap output resolution when compressing (e.g. 720, 1080)",
+    )
+
+
+class DownloadJobResponse(BaseModel):
+    job_id: str
+    status: str = "queued"
+
+
+class DownloadJobStatus(BaseModel):
+    """State of an async download job — polled by the UI for progress."""
+
+    job_id: str
+    status: str = "queued"  # queued | downloading | encoding | ready | error
+    progress: float = 0.0  # encode progress 0-100
+    filename: str = ""
+    original_size: int | None = None
+    compressed_size: int | None = None
+    saved_bytes: int | None = None
+    saved_percent: float | None = None
+    has_compressed: bool = False
+    original_available: bool = False
+    compressed_available: bool = False
+    compression_error: str | None = None
+    error: str | None = None
+
+
 class PlaylistRequest(BaseModel):
     url: str = Field(..., description="URL of the playlist to extract")
     limit: int = Field(default=50, ge=1, le=500, description="Max items to extract")
