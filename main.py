@@ -50,7 +50,7 @@ DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "mediaforge_downloads"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 TRACKER_FILE = DOWNLOAD_DIR / ".tracker.json"
-MAX_FILE_AGE_SECONDS = 15 * 60  # 15 minutes
+MAX_FILE_AGE_SECONDS = 5 * 60  # 15 minutes
 CLEANUP_INTERVAL_SECONDS = 60   # check every minute
 
 
